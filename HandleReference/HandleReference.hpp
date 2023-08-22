@@ -15,28 +15,30 @@ public:
     friend class Handle<T>;
 
     Reference()
-        : _ptr(nullptr), _refs(nullptr)
+        : _cb(nullptr)
     { }
 
     ~Reference()
     {
-        --(*_refs);
+        if(!_cb)
+            return;
 
-        if ((*_refs & (~Handle<T>::s_InvalidBit)) == 0) // No references, safe to delete
-            delete _refs;
+        --(_cb->refs);
+
+        if (_cb->refs == Handle<T>::s_InvalidBit) // No more references, delete control
+            delete _cb;
     }
 
     Reference(const Reference &other)
-        :_ptr(other._ptr), _refs(other._refs)
+        : _cb(other._cb)
     {
-        ++(*_refs);
+        ++(_cb->refs);
     }
 
     Reference(Reference&& other) noexcept
-        :_ptr(other._ptr), _refs(other._refs)
+        : _cb(other._cb)
     {
-        other._ptr = nullptr;
-        other._refs = nullptr;
+        other._cb = nullptr;
     }
 
     Reference& operator=(const Reference &other)
@@ -44,18 +46,14 @@ public:
         if(this == &other)
             return *this;
 
-        _ptr = other._ptr;
-        _refs = other._refs;
-        ++(*_refs);
+        _cb = other._cb;
+        ++(_cb->refs);
     }
 
     Reference& operator=(Reference&& other) noexcept
     {
-        _ptr = other._ptr;
-        _refs = other._refs;
-
-        other._ptr = nullptr;
-        other._refs = nullptr;
+        _cb = other._cb;
+        other._cb = nullptr;
     }
 
 
@@ -63,7 +61,7 @@ public:
     /// \return True if the memory exists, otherwise false
     bool IsValid() const
     {
-        return _refs && (*_refs & Handle<T>::s_InvalidBit) == 0;
+        return _cb && (_cb->refs & Handle<T>::s_InvalidBit) == 0;
     }
 
 
@@ -74,7 +72,7 @@ public:
     {
         if(!IsValid())
             return nullptr;
-        return _ptr;
+        return _cb->ptr;
     }
 
     T* operator->() const { return Get(); }
@@ -82,14 +80,16 @@ public:
     T& operator*() const { return *Get(); }
 
 private:
-    Reference(T* obj, size_t* refs) : _ptr(obj), _refs(refs)
+    using ControlBlock = Handle<T>::ControlBlock;
+
+    explicit Reference(ControlBlock* cb)
+        : _cb(cb)
     {
-        ++(*_refs);
+        ++(_cb->refs);
     }
 
 private:
-    T* _ptr;
-    size_t* _refs;
+    ControlBlock* _cb;
 };
 
 
@@ -100,39 +100,43 @@ public:
     friend class Reference<T>;
 
     Handle()
-        : _ptr(nullptr), _refs(nullptr)
+        : _cb(nullptr)
     { }
 
     ~Handle()
     {
-        InvalidateRefs();
+        if(!_cb) // Empty handle, do nothing
+            return;
+
+        delete _cb->ptr;
+
+        if (_cb->refs == 0) // No references, delete control block
+            delete _cb;
+        else // References exist, set invalid bit
+            _cb->refs |= s_InvalidBit;
     }
 
     friend void swap(Handle& a, Handle& b)
     {
-        std::swap(a._ptr, b._ptr);
-        std::swap(a._refs, b._refs);
+        std::swap(a._cb, b._cb);
     }
 
     Handle(const Handle& other) = delete;
 
     Handle(Handle&& other) noexcept
-        : _ptr(std::move(other._ptr))
     {
-        InvalidateRefs();
-        _refs = other._refs;
-        other._refs = nullptr;
+        this->~Handle<T>();
+        _cb = other._cb;
+        other._cb = nullptr;
     }
 
     Handle& operator=(const Handle& other) = delete;
 
     Handle& operator=(Handle&& other) noexcept
     {
-        _ptr = std::move(other._ptr);
-        InvalidateRefs();
-        _refs = other._refs;
-
-        other._refs = nullptr;
+        this->~Handle<T>();
+        _cb = other._cb;
+        other._cb = nullptr;
 
         return *this;
     }
@@ -140,30 +144,36 @@ public:
 
     explicit operator bool() const
     {
-        return (bool)_ptr;
+        return (bool)_cb;
     }
 
 
     template<typename... Args>
     static Handle Make(Args&&... args)
     {
-        return Handle(std::make_unique<T>(std::forward<Args>(args)...), new size_t(0));
+        return Handle(
+                new ControlBlock(
+                        0,
+                        new T(std::forward<Args>(args)...)
+                        )
+                );
     }
 
 
     // Movement
     /// Moves the memory ownership by offering the Handle as an rvalue
     /// \return Handle rvalue
-    Handle Move() { return Handle(std::move(_ptr)); }
-
-    /// Moves the memory ownership by offering the underlying object as an rvalue
-    /// \return Object rvalue
-    T MoveObj() { return std::move(*_ptr); }
+    Handle Move()
+    {
+        auto cb = _cb;
+        _cb = nullptr;
+        return Handle(cb);
+    }
 
     void Free()
     {
         this->~Handle<T>();
-        new (this)Handle<T>;
+        _cb = nullptr;
     }
 
 
@@ -174,33 +184,29 @@ public:
 
     Reference<T> Ref()
     {
-        return Reference<T>(Get(), _refs);
+        return Reference<T>(_cb);
     }
+
 
     static const Handle<T> Emtpy;
 
 private:
-    template<typename... Args>
-    Handle(std::unique_ptr<T> ptr, size_t* refs)
-        : _ptr(std::move(ptr)), _refs(refs)
-        { }
-
-    T* Get() const { return _ptr.get(); }
-
-    void InvalidateRefs()
+    struct ControlBlock
     {
-        if(!_refs) // Invalid Handle, do nothing
-            return;
+        size_t refs;
+        T* ptr;
+    };
 
-        if (*_refs == 0) // No references, safe to delete
-            delete _refs;
-        else // References exist, set invalid bit
-            *_refs |= s_InvalidBit;
-    }
+    explicit Handle(ControlBlock* cb)
+            : _cb(cb)
+    { }
+
+    T* Get() const { return _cb->ptr; }
+
 
 private:
-    std::unique_ptr<T> _ptr;
-    size_t *_refs;
+
+    ControlBlock* _cb;
 
     static constexpr size_t s_InvalidBit = static_cast<size_t>(1) << (sizeof(size_t) * 8 - 1);
 };
