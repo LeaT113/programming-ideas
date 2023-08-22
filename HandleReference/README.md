@@ -7,7 +7,7 @@ Expanding on the idea of `unique_ptr` and trackable memory ownership, I present 
 `Reference` takes the place of raw pointers to the object. It guarantees memory safety by checking the validity of the memory it references. You can check by calling `Reference<T>::IsValid()` which will return false if the `Handle` it references has been destroyed and the memory freed.
 
 ## Inner workings
-A `Handle` is a thin wrapper around `unique_ptr` but alongside the object, it also heap allocates a `size_t` representing **reference count**. If no references of the `Handle` were created, it frees the reference count on destruction.
+A `Handle` is a thin wrapper around `unique_ptr` but alongside the object, it also heap allocates a `size_t` representing **reference count**. If no references of the `Handle` currently exist, it frees the reference count on destruction.
 
 A `Reference` stores a raw data pointer and a pointer to the reference count, incrementing it on construction and decrementing on destruction.
 
